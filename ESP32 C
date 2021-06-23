@@ -14,8 +14,6 @@
 #include <string.h>
 #include <HX711_ADC.h>
 
-
-
 // Choose 1 of these for Serial logging level.
 #define DEBUG 2
 #define LOGGING 1
@@ -32,7 +30,7 @@
 
 #define SOFT_DEBOUNCE
 #ifdef SOFT_DEBOUNCE
-#define SOFT_DEBOUNCE_TIME_TURBINE 200 //ms
+#define SOFT_DEBOUNCE_TIME_TURBINE (70 / NUMBER_OF_BEAM_BREAKERS) //ms
 #define SOFT_DEBOUNCE_TIME_ANEMOMETER 20 //ms
 #endif
 
@@ -75,7 +73,6 @@
     #define LOG_PRINTF(...)
 #endif
 
-
 #define INTERNAL_PULLUP 0x05
 #define NO_PULLUP 0x01
 
@@ -92,12 +89,8 @@ namespace PIN {
     const uint8_t TurbineInputStyle = NO_PULLUP;
 }
 
-
-
 const uint8_t badPins[] = { 0, 1, 3, 6, 7, 8, 9, 10, 11, 12 };
 const uint8_t gpios[] = { PIN::turbineDigitalIn, PIN::anemometerInput, PIN::loadCellDataOut, PIN::loadCellSck };
-
-
 
 namespace SETTINGS {
 
@@ -124,7 +117,6 @@ namespace SETTINGS {
     const int UpdateLoadCellPriority = 0;
 };
 
-
 // Struct to store a reading.
 struct _DATA {
     time_t timestamp_s;
@@ -136,7 +128,6 @@ struct _DATA {
     float windspeed_mps;
     float turbineSpeed_rpm;
 } DATA;
-
 
 // FUNCTIONS
 bool connectToWifi();
@@ -152,7 +143,6 @@ void readData_task(void*);
 void transmitData_task(void*);
 void updateLoadCell_task(void*);
 
-
 // MultiThreading handles and queues;
 TaskHandle_t flashLED_handle;
 TaskHandle_t readData_handle;
@@ -161,7 +151,6 @@ TaskHandle_t updateLoadCell_handle;
 QueueHandle_t dataQueue;
 QueueHandle_t flashQueue;
 QueueHandle_t loadCellQueue;
-
 
 // Interrupts for reading rotating devices.
 //uint32_t nTriggers = 0;
@@ -187,7 +176,6 @@ public:
     const float getWindSpeed();
     const unsigned long getCurrReading() const;
 };
-
 
 // Initialize the load cell... It is needed by the Turbine class.
 
@@ -216,8 +204,6 @@ public:
     const unsigned long getCurrReading() const;
 };
 
-
-
 // SPIFFS - Files stored for logging... 
 class Logger {
     bool SPIFFSInitialized;
@@ -241,8 +227,6 @@ Anemometer anemometer;
 Turbine turbine;
 Timezone ukTime;
 Logger logger;
-
-
 
 // Setup Function
 void setup() {
@@ -392,7 +376,6 @@ bool connectToWifi() {
     return true;
 }
 
-
 // Read all the data and return readings as _DATA object.
 _DATA readData() {
     
@@ -434,12 +417,10 @@ _DATA readData() {
     return DATA;
 }
 
-
 // Queue flashes for LED flashing task.
 void flashLED(const int nTimes) {
     xQueueSend(flashQueue, &nTimes, portMAX_DELAY);
 }
-
 
 void checkGPIOS() {
     for (int16_t i = 0; i < sizeof(gpios); ++i) {
@@ -450,7 +431,6 @@ void checkGPIOS() {
         }
     } 
 }
-
 
 void logWIFI() {
     LOG_PRINT("Wifi signal strength is: ");
@@ -472,7 +452,6 @@ void flashLED_task(void* p) {
         }
     }
 }
-
 
 // Sets up repetition and then calls readData().  Also logs some debugging info.
 void readData_task(void* p) {
@@ -522,7 +501,6 @@ void readData_task(void* p) {
         // DEBUG_PRINTLN(uxTaskGetStackHighWaterMark(NULL));
     }
 }
-
 
 void transmitData_task(void* p) {
 
@@ -633,8 +611,6 @@ void updateLoadCell_task(void* p) {
     }
 }
 
-
-
 // Interrupt functions.
 void takeAnemometerReading() {
 #ifdef SOFT_DEBOUNCE
@@ -644,7 +620,6 @@ void takeAnemometerReading() {
     anemometer.takeReading();
 }
 
-
 void takeTurbineReading() {
 #ifdef SOFT_DEBOUNCE
     auto cTime = millis();
@@ -653,10 +628,6 @@ void takeTurbineReading() {
     turbine.takeReading();
 }
 
-
-
-
-
 // Anemometer Class Functions
 Anemometer::Anemometer() : reading(millis()), previousReading(reading), hasBeenRead(true) {
 
@@ -664,20 +635,17 @@ Anemometer::Anemometer() : reading(millis()), previousReading(reading), hasBeenR
     pinMode(PIN::anemometerInput, PIN::AnemometerInputStyle);
 }
 
-
 void Anemometer::start() {
     reading = millis() - 1200000;
     previousReading = reading - 1200000;    // Start with a slow speed.
     attachInterrupt(digitalPinToInterrupt(PIN::anemometerInput), takeAnemometerReading, ANEMOMETER_PIN_INTERRUPT_MODE);
 }
 
-
 void Anemometer::takeReading() { 
     previousReading = reading; 
     reading = millis(); 
     hasBeenRead = false; 
 }
-
 
 // This is where wind speed is calculated...
 const float Anemometer::getWindSpeed() {
@@ -697,10 +665,7 @@ const float Anemometer::getWindSpeed() {
     return 1.25 * frequency_hz;
 }
 
-
 const unsigned long Anemometer::getCurrReading() const { return reading; }
-
-
 
 // Turbine Class Functions
 
@@ -709,7 +674,6 @@ Turbine::Turbine() : loadCell(PIN::loadCellDataOut, PIN::loadCellSck), rotationa
     LOG_PRINTLN("Turbine sensor initialized...");
     pinMode(PIN::turbineDigitalIn, PIN::TurbineInputStyle);
 }
-
 
 void Turbine::start() {
 
@@ -729,13 +693,11 @@ void Turbine::start() {
     }
 }
 
-
 void Turbine::takeReading() { 
     previousRotationalReading = rotationalReading;
     rotationalReading = millis();
     rotationHasBeenRead = false;
 }
-
 
 void Turbine::updateLoadCellReading() {
     if (!loadCell.update()) return;
@@ -743,15 +705,11 @@ void Turbine::updateLoadCellReading() {
     xQueueOverwrite(loadCellQueue, &newValue);
 }
 
-
 const float Turbine::getLoadCellReading() const {
     float reading = 0.0;
     xQueueReceive(loadCellQueue, &reading, portMAX_DELAY);
     return reading;
 }
-
-
-
 
 const float Turbine::getRPM() {
 
@@ -771,7 +729,6 @@ const float Turbine::getRPM() {
     return (NUMBER_OF_BEAM_BREAKERS / time_s) * 60;
 }
 
-
 const float Turbine::convertAnalogPressureReadingToGrams(uint16_t reading) const {
     uint16_t inverted = 4095 - reading;
     //Serial.printf("Number of triggers: %u\n", nTriggers);
@@ -780,15 +737,9 @@ const float Turbine::convertAnalogPressureReadingToGrams(uint16_t reading) const
     return 0.0;
 }
 
-
 const unsigned long Turbine::getCurrReading() const { 
     return rotationalReading; 
 }
-
-
-
-
-
 
 // Logger Class Functions
 Logger::Logger() : SPIFFSInitialized(false) {}
@@ -921,7 +872,6 @@ void http_to_string(char* const returnString, const int code) {
         default: strcpy(returnString, "Other");
     };
 }
-
 
 // The main loop! ( or not )
 // Not used when running on ESP32
