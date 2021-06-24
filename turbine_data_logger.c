@@ -28,7 +28,7 @@
 
 #define NUMBER_OF_BEAM_BREAKERS 8
 
-#define SOFT_DEBOUNCE
+// #define SOFT_DEBOUNCE
 #ifdef SOFT_DEBOUNCE
 #define SOFT_DEBOUNCE_TIME_TURBINE (70 / NUMBER_OF_BEAM_BREAKERS) //ms
 #define SOFT_DEBOUNCE_TIME_ANEMOMETER 20 //ms
@@ -716,7 +716,7 @@ const float Turbine::getRPM() {
 	// If no change has been detected things are slowing down.  We'll call it a reading
 	// and so the speed will fade away.
 	// time between clicks ie one revolution.   
-	auto int time_ms;
+	int time_ms;
 //	if (rotationHasBeenRead)
 //		time_ms = millis() - previousRotationalReading;
 //	else
