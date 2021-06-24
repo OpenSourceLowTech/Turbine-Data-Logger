@@ -730,7 +730,7 @@ const float Turbine::getRPM() {
 	rotationHasBeenRead = true;
 
 	// inverse should give rpm.
-	return (NUMBER_OF_BEAM_BREAKERS / time_s) * 60;
+	return (1.0 / (time_s * NUMBER_OF_BEAM_BREAKERS)) * 60;
 
 }
 
