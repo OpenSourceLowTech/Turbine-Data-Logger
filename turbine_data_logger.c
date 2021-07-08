@@ -26,6 +26,8 @@
 #define TEST 0 // set to 0 for Summerhall. // 1 no ina260 & 2 with ina260...
 #define WIFI_TEST_MODE // Gives regular wifi strength updates. comment out to not use.
 
+#define MAX_RPMS 1000
+#define MAX_REVOLUTIONS_PER_SECOND (MAX_RPMS / 60)
 #define NUMBER_OF_BEAM_BREAKERS 8
 
 // #define SOFT_DEBOUNCE
@@ -149,6 +151,7 @@ TaskHandle_t readData_handle;
 TaskHandle_t transmitData_handle;
 TaskHandle_t updateLoadCell_handle;
 QueueHandle_t dataQueue;
+QueueHandle_t beamSplitTimestampQueue;
 QueueHandle_t flashQueue;
 QueueHandle_t loadCellQueue;
 
@@ -183,11 +186,18 @@ public:
 class Turbine {
 
 	HX711_ADC loadCell;
-	volatile unsigned long rotationalReading;
-	volatile unsigned long previousRotationalReading;
-	volatile bool rotationHasBeenRead;
 
 	const float convertAnalogPressureReadingToGrams(uint16_t reading) const;
+
+	// the last time a beam split the sensor, measured in milliseconds
+	int lastBeamSplitTimestamp;
+
+	// the number of time lapses stored in our averaging buffer
+	const int numTimeLapses = 8;
+	int timeLapses_ms[numTimeLapses];
+
+	// The current time lapse index.  The current time lapse serial number = lastTimeLapseSerial % numTimeLapses
+	int lastTimeLapseSerial;
 
 public:
 	Turbine();
@@ -198,10 +208,7 @@ public:
 	const float getLoadCellReading() const;
 
 	// Called by the interrupt functions to update the data.
-	void takeReading();
 	void updateLoadCellReading();
-	// Used by turbine rpm interrupt to check time of previous turbine reading.
-	const unsigned long getCurrReading() const;
 };
 
 // SPIFFS - Files stored for logging... 
@@ -246,7 +253,7 @@ void setup() {
 	LOG_PRINT(F("Current Clock speed is: "));
 	LOG_PRINT(ESP.getCpuFreqMHz());
 	LOG_PRINTLN(F(" MHz\n"));
-	
+
 	// Take a count of restarts...  Higher than expected count = issues.
 	if (logger.init()) {
 		DEBUG_PRINTLN("Logger initialized.");
@@ -295,6 +302,14 @@ void setup() {
 	// Keep one data element in queue.
 	loadCellQueue = xQueueCreate(1, sizeof(float));
 
+	// Stores a timestamp every time the beam is split
+	int secondsOfBeamSplitBuffer = 3 * SETTINGS::ReadingInterval_mS / 1000;
+	int beamBreaksPerRevolution = NUMBER_OF_BEAM_BREAKERS;
+	int maxRevolutionsPerSecond = MAX_REVOLUTIONS_PER_SECOND;
+	int beamSplitTimestampQueueLength = secondsOfBeamSplitBuffer * beamBreaksPerRevolution
+		* maxRevolutionsPerSecond;
+	beamSplitTimestampQueue = xQueueCreate(beamSplitTimestampQueueLength, sizeof(int));
+
 	// Data read task.
 	xTaskCreatePinnedToCore(	readData_task,
 								"Read data",
@@ -304,6 +319,7 @@ void setup() {
 								&readData_handle,
 								1
 							);
+
 	// Data transmit task.
 	xTaskCreatePinnedToCore(	transmitData_task,
 								"Transmit data",
@@ -313,6 +329,7 @@ void setup() {
 								&transmitData_handle,
 								1
 							);
+
 	// Flash LED task.
 	xTaskCreatePinnedToCore(	flashLED_task,
 								"Flash LED",
@@ -322,6 +339,7 @@ void setup() {
 								&flashLED_handle,
 								1
 							);
+
 	xTaskCreatePinnedToCore(	updateLoadCell_task,
 								"Update Load Cell",
 								1024,
@@ -621,11 +639,8 @@ void takeAnemometerReading() {
 }
 
 void takeTurbineReading() {
-#ifdef SOFT_DEBOUNCE
-	int cTime = millis();
-	if (cTime - turbine.getCurrReading() < SOFT_DEBOUNCE_TIME_TURBINE) return;
-#endif
-	turbine.takeReading();
+	int reading = millis();
+	xQueueSend(beamSplitTimestampQueue, &reading, portMAX_DELAY);
 }
 
 // Anemometer Class Functions
@@ -669,7 +684,9 @@ const unsigned long Anemometer::getCurrReading() const { return reading; }
 
 // Turbine Class Functions
 
-Turbine::Turbine() : loadCell(PIN::loadCellDataOut, PIN::loadCellSck), rotationalReading(millis()), previousRotationalReading(rotationalReading), rotationHasBeenRead(true) {
+Turbine::Turbine() : loadCell(PIN::loadCellDataOut, PIN::loadCellSck),
+	lastTimeLapseSerial(0)
+	{
 
 	LOG_PRINTLN("Turbine sensor initialized...");
 	pinMode(PIN::turbineDigitalIn, PIN::TurbineInputStyle);
@@ -677,8 +694,6 @@ Turbine::Turbine() : loadCell(PIN::loadCellDataOut, PIN::loadCellSck), rotationa
 
 void Turbine::start() {
 
-	rotationalReading = millis() - 1200000; // Imaginary last reading was 20 minutes ago.
-	previousRotationalReading = rotationalReading - 1200000; // And the previous reading was 20 minutes before that.
 	attachInterrupt(digitalPinToInterrupt(PIN::turbineDigitalIn), takeTurbineReading, TURBINE_PIN_INTERRUPT_MODE);
 	loadCell.begin();
 	LOG_PRINTLN("Starting load cell.");
@@ -691,12 +706,6 @@ void Turbine::start() {
 		loadCell.setCalFactor(LOAD_CELL_CALIBRATION_VALUE); // set calibration value (float)
 		LOG_PRINTLN("Startup is complete");
 	}
-}
-
-void Turbine::takeReading() { 
-	previousRotationalReading = rotationalReading;
-	rotationalReading = millis();
-	rotationHasBeenRead = false;
 }
 
 void Turbine::updateLoadCellReading() {
@@ -713,24 +722,50 @@ const float Turbine::getLoadCellReading() const {
 
 const float Turbine::getRPM() {
 
-	// If no change has been detected things are slowing down.  We'll call it a reading
-	// and so the speed will fade away.
-	// time between clicks ie one revolution.   
-	int time_ms;
-//	if (rotationHasBeenRead)
-//		time_ms = millis() - previousRotationalReading;
-//	else
-		time_ms = rotationalReading - previousRotationalReading;
+	// Pull latest timestamps off the beam splitter queue
+	while (uxQueueMessagesWaiting(beamSplitTimestampQueue)) {
 
-	LOG_PRINT("ms between turbine clicks: ");
-	LOG_PRINTLN(time_ms);
+		int beamSplitTimestamp;
+		xQueueReceive(beamSplitTimestampQueue, &beamSplitTimestamp, portMAX_DELAY);
 
-	// time in secs.
-	float time_s = static_cast<float>(time_ms) * 0.001;
-	rotationHasBeenRead = true;
+		int timeLapsed_ms = beamSplitTimestamp - lastBeamSplitTimestamp;
 
-	// inverse should give rpm.
-	return (1.0 / (time_s * NUMBER_OF_BEAM_BREAKERS)) * 60;
+		// Now place them into the averaging queue, overwriting old values if necessary
+		//   rSshould check whether modulo is expensive on esp32
+		timeLapses_ms[lastTimeLapseSerial % numTimeLapses] = timeLapsed_ms;
+
+		lastTimeLapseSerial++;
+
+		lastBeamSplitTimestamp = beamSplitTimestamp;
+
+	}
+
+	// Return -1 rpms if we don't have enough data to know yet
+	if (lastTimeLapseSerial < 2)
+		return -1.0;
+
+	// The averaging queue always uses the last numLapses values to average,
+	//   so it doesn't matter which order we add them in
+	int accumulator_ms = 0;
+
+	// We should use no more data than we have smaples for
+	//   We add one to numTimeLapses, because the first entry is not real
+	int numLapses = numTimeLapses;
+	if (lastTimeLapseSerial < numTimeLapses + 1)
+		numLapses = lastTimeLapseSerial;
+
+	// Calculate the average
+	for (i=0 ; i < numLapses ; i++)
+	{
+		accumulator_ms += timeLapses_ms[i];
+	}
+	int averageTimeLapse_ms = accumulator_ms / numLapses;
+
+	// Convert to seconds
+	float averageTimeLapse = static_cast<float>(averageTimeLapse_ms) * 0.001;
+
+	// Convert to rpm
+	return 60.0 / averageTimeLapse;
 
 }
 
@@ -740,10 +775,6 @@ const float Turbine::convertAnalogPressureReadingToGrams(uint16_t reading) const
 	Serial.printf("Analog reading: %hu\n", inverted);
 	// expecting 0 to 4095...
 	return 0.0;
-}
-
-const unsigned long Turbine::getCurrReading() const { 
-	return rotationalReading; 
 }
 
 // Logger Class Functions
