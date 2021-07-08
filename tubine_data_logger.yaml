@@ -1,0 +1,24 @@
+esphome:
+  name: turbine1
+  platform: ESP32
+  board: esp32doit-devkit-v1
+  build_path: .
+
+wifi:
+  ssid: "The Bush"
+  password: ""
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Turbine1 Fallback Hotspot"
+    password: "Na1nDTH8Negl"
+
+captive_portal:
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+
+ota:
