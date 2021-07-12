@@ -755,7 +755,7 @@ const float Turbine::getRPM() {
 		numLapses = lastTimeLapseSerial;
 
 	// Calculate the average
-	for (i=0 ; i < numLapses ; i++)
+	for (int i=0 ; i < numLapses ; i++)
 	{
 		accumulator_ms += timeLapses_ms[i];
 	}
