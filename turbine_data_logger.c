@@ -193,7 +193,7 @@ class Turbine {
 	int lastBeamSplitTimestamp;
 
 	// the number of time lapses stored in our averaging buffer
-	const int numTimeLapses = 8;
+	static const int numTimeLapses = 8;
 	int timeLapses_ms[numTimeLapses];
 
 	// The current time lapse index.  The current time lapse serial number = lastTimeLapseSerial % numTimeLapses
