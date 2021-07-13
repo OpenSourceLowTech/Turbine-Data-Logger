@@ -650,7 +650,7 @@ void takeTurbineReading() {
 	}
 	else
 	{
-		beamSplitTimestampQueueOverflowCount++;
+		turbine.beamSplitTimestampQueueOverflowCount++;
 	}
 }
 
