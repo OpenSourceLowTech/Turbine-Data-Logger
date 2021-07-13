@@ -190,9 +190,6 @@ class Turbine {
 
 	const float convertAnalogPressureReadingToGrams(uint16_t reading) const;
 
-	// If the beamsplit timestamp queue is full, the interrupt handler will set this to true
-	volatile int beamSplitTimestampQueueOverflowCount;
-
 	// the last time a beam split the sensor, measured in milliseconds
 	int lastBeamSplitTimestamp;
 
@@ -204,6 +201,10 @@ class Turbine {
 	int lastTimeLapseSerial;
 
 public:
+
+	// If the beamsplit timestamp queue is full, the interrupt handler will set this to true
+	volatile int beamSplitTimestampQueueOverflowCount;
+
 	Turbine();
 	void start();
 
