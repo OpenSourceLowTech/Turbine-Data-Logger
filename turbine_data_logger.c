@@ -405,8 +405,8 @@ _DATA readData() {
 
 	// Take some readings.
 	LOG_PRINTLN(F("Taking Measurements."));
-	// Pulse the LED.
-	flashLED(2);
+	// Pulse the LED once.
+	flashLED(1);
 	// Timestamp the data.
 	DATA.timestamp_s = now();
 
@@ -471,13 +471,25 @@ void logWIFI() {
 // Processor Task Functions.
 // The following 4 tasks run concurrently on core 1.
 void flashLED_task(void* p) {
+
 	int nFlashes = 0;
+
 	while(1) {
+
+		// Get flash LED request
 		xQueueReceive(flashQueue, &nFlashes, portMAX_DELAY);
+
+		// Flash the LED the number of times requested
 		for (int i = 0; i < nFlashes; ++i) { 
-			digitalWrite(LED_BUILTIN, ((i % 2) != 0));
+			digitalWrite(LED_BUILTIN, HIGH);
+			vTaskDelay(50 / portTICK_PERIOD_MS);
+			digitalWrite(LED_BUILTIN, LOW);
 			vTaskDelay(50 / portTICK_PERIOD_MS);
 		}
+
+		// Force a short break between flashes so that we know when they've come in a group
+		vTaskDelay(200 / portTICK_PERIOD_MS);
+
 	}
 }
 
@@ -627,12 +639,12 @@ void transmitData_task(void* p) {
 			if (httpResponseCode == 200)
 			{
 				LOG_PRINTLN(F("Request successful. ; )\n"));
-				flashLED(4);
+				flashLED(2);
 			}
 			else
 			{
 				LOG_PRINTLN(F("Attempt to POST data failed after 3 attempts.  Binning data."));
-				flashLED(6);
+				flashLED(3);
 			}
 
 			http.end();
