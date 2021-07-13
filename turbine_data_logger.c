@@ -441,7 +441,13 @@ _DATA readData() {
 
 // Queue flashes for LED flashing task.
 void flashLED(const int nTimes) {
-	xQueueSend(flashQueue, &nTimes, portMAX_DELAY);
+	// If we can't flash the LED because the queue is full, then don't bother, not essential
+	//   but make a note of it
+	BaseType_t sendRC = xQueueSend(flashQueue, &nTimes, 0);
+	if (sendRC == errQUEUE_FULL)
+	{
+		LOG_PRINTLN("LED flash queue is full, discarding flash request.");
+	}
 }
 
 void checkGPIOS() {
@@ -514,7 +520,7 @@ void readData_task(void* p) {
 		LOG_PRINTLN(readings);
 		LOG_PRINTLN();
 #endif
-		
+
 		// Queue the data.
 		xQueueSend(dataQueue, &data, portMAX_DELAY);
 
@@ -550,6 +556,8 @@ void transmitData_task(void* p) {
 // Parse the data.
 		char content[CONTENT_LENGTH] = "\0";
 
+		bool contentAvailable = false;
+
 		// Assuming delay on reading means we can't keep loading the queue while emptying...
 		while (uxQueueMessagesWaiting(dataQueue)) {
 
@@ -570,13 +578,15 @@ void transmitData_task(void* p) {
 			);
 
 			strcat(content, line);
-			flashLED(2);
 			// Check if buffer overrun on line.
 			//LOG_PRINT(F("Strlen line: "));
 			//LOG_PRINTLN(strlen(line));
+
+			contentAvailable = true;
+
 		}
 
-		if (strlen(content)) {
+		if (contentAvailable) {
 
 			DEBUG_PRINTLN(F("Sending data string:"));
 			DEBUG_PRINTLN(content);
@@ -613,8 +623,18 @@ void transmitData_task(void* p) {
 					vTaskDelay(3000 / portTICK_PERIOD_MS);
 				}
 			}
-			if (httpResponseCode == 200) LOG_PRINTLN(F("Request successful. ; )\n"));
-			else LOG_PRINTLN(F("Attempt to POST data failed after 3 attempts.  Binning data."));
+
+			if (httpResponseCode == 200)
+			{
+				LOG_PRINTLN(F("Request successful. ; )\n"));
+				flashLED(4);
+			}
+			else
+			{
+				LOG_PRINTLN(F("Attempt to POST data failed after 3 attempts.  Binning data."));
+				flashLED(6);
+			}
+
 			http.end();
 		}
 //	  If crashes can be due to not enough RAM see tasks in setup.
@@ -704,6 +724,15 @@ Turbine::Turbine() : loadCell(PIN::loadCellDataOut, PIN::loadCellSck)
 
 QueueHandle_t Turbine::createQueue() {
 
+	// Initialize the beam splitter tracking
+	beamSplitTimestampQueueOverflowCount = 0;
+	lastTimeLapseSerial = 0;
+	for (int i=0 ; i<numTimeLapses ; i++)
+		timeLapses_ms[i] = 0;
+
+	// This will make the last beam split seem like 40s ago (an eternity, making the RPM start near 0)
+	lastBeamSplitTimestamp = -40000;
+
 	// We're using this queue to talk to the interrupt handler
 	//   We check the queue every second, so we keep 3 seconds worth of queue at the maximum
 	//   expected volume of interrupts
@@ -717,20 +746,12 @@ QueueHandle_t Turbine::createQueue() {
 	LOG_PRINTF("Maximum Revolutions per Second = [%d] (%d RPM)\n", maxRevolutionsPerSecond, maxRPMs);
 	LOG_PRINTF("beamSplitTimestampQueueLength = [%d]\n", beamSplitTimestampQueueLength);
 
+	// Return the queue we listen to for beam split timestamps
 	return xQueueCreate(beamSplitTimestampQueueLength, sizeof(int));
 	
 }
 
 void Turbine::start() {
-
-	// Initialize the beam splitter tracking
-	beamSplitTimestampQueueOverflowCount = 0;
-	lastTimeLapseSerial = 0;
-	for (int i=0 ; i<numTimeLapses ; i++)
-		timeLapses_ms[i] = 0;
-
-	// This will make the last beam split seem like 40s ago (an eternity, making the RPM start near 0)
-	lastBeamSplitTimestamp = -40000;
 
 	// Arm the interrupt handler for the beam splitter
 	attachInterrupt(digitalPinToInterrupt(PIN::turbineDigitalIn), takeTurbineReading, TURBINE_PIN_INTERRUPT_MODE);
