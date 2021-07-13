@@ -29,6 +29,7 @@
 #define MAX_RPMS 1000
 #define MAX_REVOLUTIONS_PER_SECOND (MAX_RPMS / 60)
 #define NUMBER_OF_BEAM_BREAKERS 8
+#define TURBINE_STOPPED_THRESHOLD_MS (5000 / NUMBER_OF_BEAM_BREAKERS)
 
 // #define SOFT_DEBOUNCE
 #ifdef SOFT_DEBOUNCE
@@ -189,6 +190,9 @@ class Turbine {
 
 	const float convertAnalogPressureReadingToGrams(uint16_t reading) const;
 
+	// If the beamsplit timestamp queue is full, the interrupt handler will set this to true
+	volatile int beamSplitTimestampQueueOverflowCount;
+
 	// the last time a beam split the sensor, measured in milliseconds
 	int lastBeamSplitTimestamp;
 
@@ -209,6 +213,9 @@ public:
 
 	// Called by the interrupt functions to update the data.
 	void updateLoadCellReading();
+
+	QueueHandle_t createQueue();
+
 };
 
 // SPIFFS - Files stored for logging... 
@@ -290,8 +297,6 @@ void setup() {
 	LOG_PRINTLN(F("Connected to IN260.\n"));
 #endif
 
-	turbine.start(); // Put this here as it delays anyway.
-
 	//vTaskDelay(5500 * portTICK_PERIOD_MS);
 
 // Multithreading - start 3 tasks with a data queue in between.
@@ -301,14 +306,8 @@ void setup() {
 	flashQueue = xQueueCreate(5, sizeof(int));
 	// Keep one data element in queue.
 	loadCellQueue = xQueueCreate(1, sizeof(float));
-
-	// Stores a timestamp every time the beam is split
-	int secondsOfBeamSplitBuffer = 3 * SETTINGS::ReadingInterval_mS / 1000;
-	int beamBreaksPerRevolution = NUMBER_OF_BEAM_BREAKERS;
-	int maxRevolutionsPerSecond = MAX_REVOLUTIONS_PER_SECOND;
-	int beamSplitTimestampQueueLength = secondsOfBeamSplitBuffer * beamBreaksPerRevolution
-		* maxRevolutionsPerSecond;
-	beamSplitTimestampQueue = xQueueCreate(beamSplitTimestampQueueLength, sizeof(int));
+	// The beamsplit queue is for receiving timestamps of when the beam was split on the turbine
+	beamSplitTimestampQueue = turbine.createQueue();
 
 	// Data read task.
 	xTaskCreatePinnedToCore(	readData_task,
@@ -351,6 +350,10 @@ void setup() {
 
 	// Attach the interrupts to the pins.
 	anemometer.start();
+
+	// Start handling interrupts from the turbine load cell and rpm beam splitter
+	turbine.start();
+
 }
 
 
@@ -640,7 +643,15 @@ void takeAnemometerReading() {
 
 void takeTurbineReading() {
 	int reading = millis();
-	xQueueSend(beamSplitTimestampQueue, &reading, portMAX_DELAY);
+	int numQueueSpacesAvailable = uxQueueSpacesAvailable(beamSplitTimestampQueue);
+	if (numQueueSpacesAvailable > 0)
+	{
+		xQueueSendFromISR(beamSplitTimestampQueue, &reading, 0);
+	}
+	else
+	{
+		beamSplitTimestampQueueOverflowCount++;
+	}
 }
 
 // Anemometer Class Functions
@@ -684,28 +695,60 @@ const unsigned long Anemometer::getCurrReading() const { return reading; }
 
 // Turbine Class Functions
 
-Turbine::Turbine() : loadCell(PIN::loadCellDataOut, PIN::loadCellSck),
-	lastTimeLapseSerial(0)
-	{
-
+Turbine::Turbine() : loadCell(PIN::loadCellDataOut, PIN::loadCellSck)
+{
 	LOG_PRINTLN("Turbine sensor initialized...");
 	pinMode(PIN::turbineDigitalIn, PIN::TurbineInputStyle);
 }
 
+QueueHandle_t Turbine::createQueue() {
+
+	// We're using this queue to talk to the interrupt handler
+	//   We check the queue every second, so we keep 3 seconds worth of queue at the maximum
+	//   expected volume of interrupts
+	int secondsOfBeamSplitBuffer = 3 * SETTINGS::ReadingInterval_mS / 1000;
+	int beamBreaksPerRevolution = NUMBER_OF_BEAM_BREAKERS;
+	int maxRevolutionsPerSecond = MAX_REVOLUTIONS_PER_SECOND;
+	int maxRPMs = MAX_RPMS;
+	int beamSplitTimestampQueueLength = secondsOfBeamSplitBuffer * beamBreaksPerRevolution
+		* maxRevolutionsPerSecond;
+	LOG_PRINTF("Beam Breaks per Revolution = [%d]\n", beamBreaksPerRevolution);
+	LOG_PRINTF("Maximum Revolutions per Second = [%d] (%d RPM)\n", maxRevolutionsPerSecond, maxRPMs);
+	LOG_PRINTF("beamSplitTimestampQueueLength = [%d]\n", beamSplitTimestampQueueLength);
+
+	return xQueueCreate(beamSplitTimestampQueueLength, sizeof(int));
+	
+}
+
 void Turbine::start() {
 
+	// Initialize the beam splitter tracking
+	beamSplitTimestampQueueOverflowCount = 0;
+	lastTimeLapseSerial = 0;
+	for (int i=0 ; i<numTimeLapses ; i++)
+		timeLapses_ms[i] = 0;
+
+	// This will make the last beam split seem like 40s ago (an eternity, making the RPM start near 0)
+	lastBeamSplitTimestamp = -40000;
+
+	// Arm the interrupt handler for the beam splitter
 	attachInterrupt(digitalPinToInterrupt(PIN::turbineDigitalIn), takeTurbineReading, TURBINE_PIN_INTERRUPT_MODE);
+
+	// Initialize the load cell
 	loadCell.begin();
 	LOG_PRINTLN("Starting load cell.");
 	loadCell.start(LOAD_CELL_STABILIZING_TIME, LOAD_CELL_TARE);
 	LOG_PRINTLN("Load cell started");
+
 	if (loadCell.getTareTimeoutFlag()) {
 		LOG_PRINTLN("Timeout, check MCU>HX711 wiring and pin designations");
+		LOG_PRINTLN("Going into busy wait");
 		while (1);
 	} else {
 		loadCell.setCalFactor(LOAD_CELL_CALIBRATION_VALUE); // set calibration value (float)
 		LOG_PRINTLN("Startup is complete");
 	}
+
 }
 
 void Turbine::updateLoadCellReading() {
@@ -733,11 +776,29 @@ const float Turbine::getRPM() {
 		// Now place them into the averaging queue, overwriting old values if necessary
 		//   rSshould check whether modulo is expensive on esp32
 		timeLapses_ms[lastTimeLapseSerial % numTimeLapses] = timeLapsed_ms;
-
 		lastTimeLapseSerial++;
 
 		lastBeamSplitTimestamp = beamSplitTimestamp;
 
+	}
+
+	// If the last time the beam split is over a threshold, we add to the timelapse buffer
+	//   but without updating the last beamsplit time.  This should make the RPMs gradually drop.
+	int now_mS = millis();
+	int timeLapsedSinceLastBeamSplit = now_mS - lastBeamSplitTimestamp;
+	if (timeLapsedSinceLastBeamSplit > TURBINE_STOPPED_THRESHOLD_MS)
+	{
+		timeLapses_ms[lastTimeLapseSerial % numTimeLapses] = timeLapsedSinceLastBeamSplit;
+		lastTimeLapseSerial++;
+	}
+
+	// After we've emptied the queue, check if it has overflowed and spit out a warning if so
+	if (beamSplitTimestampQueueOverflowCount > 0)
+	{
+		int readingInterval = SETTINGS::ReadingInterval_mS;
+		LOG_PRINTF("Warning: Beam Split Timestamp Queue Overflowed [%d] times during last [%d] ms",
+			beamSplitTimestampQueueOverflowCount, readingInterval);
+		beamSplitTimestampQueueOverflowCount = 0;
 	}
 
 	// Return -1 rpms if we don't have enough data to know yet
