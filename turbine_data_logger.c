@@ -860,7 +860,7 @@ const float Turbine::getRPM() {
 	float averageTimeLapse = static_cast<float>(averageTimeLapse_ms) * 0.001;
 
 	// Convert to rpm
-	return 60.0 / averageTimeLapse;
+	return 60.0 / (averageTimeLapse * NUMBER_OF_BEAM_BREAKERS);
 
 }
 
