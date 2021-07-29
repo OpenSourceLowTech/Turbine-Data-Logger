@@ -97,7 +97,7 @@ const uint8_t gpios[] = { PIN::turbineDigitalIn, PIN::anemometerInput, PIN::load
 
 namespace SETTINGS {
 
-	const bool EnableINA260 = true;
+	const bool EnableINA260 = false;
 	const int ReadingInterval_mS = 1000; // 1 second
 	const int TransmitInterval_mS = 30000;
 	const int UpdateLoadCellInterval_mS = 200;
