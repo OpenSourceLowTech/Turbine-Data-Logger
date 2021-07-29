@@ -97,6 +97,7 @@ const uint8_t gpios[] = { PIN::turbineDigitalIn, PIN::anemometerInput, PIN::load
 
 namespace SETTINGS {
 
+	const bool EnableINA260 = true;
 	const int ReadingInterval_mS = 1000; // 1 second
 	const int TransmitInterval_mS = 30000;
 	const int UpdateLoadCellInterval_mS = 200;
@@ -287,15 +288,35 @@ void setup() {
 
 	Wire.setPins(22,23);
 
-	while (!ina260.begin(INA260_I2CADDR_DEFAULT, &Wire)) {
-
-		LOG_PRINTLN(F("INA260 failed to connect. Retrying."));
-		delay(1500);
+	// Try a few times to find the INA260 board
+	const int ina260NumTries = 5;
+	bool ina260Found = false;
+	for (int i=0 ; i<ina260NumTries && !ina260Found ; i++)
+	{
+		ina260Found = ina260.begin(INA260_I2CADDR_DEFAULT, &Wire);
+		if (!ina260Found)
+		{
+			LOG_PRINTLN(F("INA260 failed to connect. Retrying."));
+			delay(1500);
+		}
 	}
-	ina260.setMode(INA260_MODE_CONTINUOUS);  // Runs continuously.
-	ina260.setAveragingCount(INA260_COUNT_4);  // Average of 4 samples.
 
-	LOG_PRINTLN(F("Connected to IN260.\n"));
+	// If we want to use it, set the mode to running continuously
+	if (SETTINGS::EnableINA260)
+	{
+		ina260.setMode(INA260_MODE_CONTINUOUS);  // Runs continuously.
+		ina260.setAveragingCount(INA260_COUNT_4);  // Average of 4 samples.
+		LOG_PRINTLN(F("Connected to INA260.\n"));
+	}
+	else
+	{
+		if (ina260Found)
+		{
+			ina260.setMode(INA260_MODE_SHUTDOWN);  // Shut down the INA260
+			LOG_PRINTLN(F("INA260 Shutdown.\n"));
+		}
+	}
+
 #endif
 
 	//vTaskDelay(5500 * portTICK_PERIOD_MS);
@@ -411,18 +432,22 @@ _DATA readData() {
 	DATA.timestamp_s = now();
 
 #if ( TEST != 1 )
-	// Read the voltage.
-	DATA.voltage_V = ina260.readBusVoltage() * 0.001 * 3 * 1.007;
-	// Read the current.
-	DATA.current_A = ina260.readCurrent() * 0.001;
-	// Calculate the power.
-	DATA.power_W = DATA.voltage_V * DATA.current_A;
+	if (SETTINGS::EnableINA260)
+	{
+		// Read the voltage.
+		DATA.voltage_V = ina260.readBusVoltage() * 0.001 * 3 * 1.007;
+		// Read the current.
+		DATA.current_A = ina260.readCurrent() * 0.001;
+		// Calculate the power.
+		DATA.power_W = DATA.voltage_V * DATA.current_A;
+	}
 #else
 	// Only for testing without ina260 connected.
 	DATA.voltage_V = 5;
 	DATA.current_A = 100.0;
 	DATA.power_W = 500;
 #endif
+
 	// Take windspeed reading.
 	DATA.windspeed_mps = anemometer.getWindSpeed();
 	// Take turbine rpm reading.
@@ -575,19 +600,37 @@ void transmitData_task(void* p) {
 
 			char line[LINE_LENGTH];
 			_DATA data;
-			
+
 			xQueueReceive(dataQueue, &data, portMAX_DELAY);
-			
+
 			auto ts = data.timestamp_s;
-			sprintf(line, "%lu,Voltage,%.3f\n%lu,Current,%.3f\n%lu,Power,%.3f\n%lu,Energy,%.3f\n%lu,Windspeed,%.1f\n%lu,Turbine_RPM,%.2f\n%lu,Turbine_Force,%.0f\n",
-							ts, data.voltage_V,
-							ts, data.current_A,
-							ts, data.power_W,
-							ts, data.energy_Wh, 
-							ts, data.windspeed_mps,
-							ts, data.turbineSpeed_rpm,
-							ts, data.pressure_g
-			);
+
+			if (!SETTINGS::EnableINA260)
+			{
+				sprintf(line, "%lu,Windspeed,%.1f\n"
+					"%lu,Turbine_RPM,%.2f\n"
+					"%lu,Turbine_Force,%.0f\n",
+					ts, data.windspeed_mps,
+					ts, data.turbineSpeed_rpm,
+					ts, data.pressure_g);
+			}
+			else
+			{
+				sprintf(line, "%lu,Voltage,%.3f\n"
+					"%lu,Current,%.3f\n"
+					"%lu,Power,%.3f\n"
+					"%lu,Energy,%.3f\n"
+					"%lu,Windspeed,%.1f\n"
+					"%lu,Turbine_RPM,%.2f\n"
+					"%lu,Turbine_Force,%.0f\n",
+					ts, data.voltage_V,
+					ts, data.current_A,
+					ts, data.power_W,
+					ts, data.energy_Wh, 
+					ts, data.windspeed_mps,
+					ts, data.turbineSpeed_rpm,
+					ts, data.pressure_g);
+			}
 
 			strcat(content, line);
 			// Check if buffer overrun on line.
