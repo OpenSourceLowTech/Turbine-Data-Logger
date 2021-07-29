@@ -122,8 +122,9 @@ namespace SETTINGS {
 };
 
 // Struct to store a reading.
-struct _DATA {
+struct DataStruct {
 	time_t timestamp_s;
+	long wifiStrength_dBm;
 	float voltage_V;
 	float current_A;
 	float power_W;
@@ -131,12 +132,12 @@ struct _DATA {
 	float pressure_g;
 	float windspeed_mps;
 	float turbineSpeed_rpm;
-} DATA;
+};
 
 // FUNCTIONS
 bool connectToWifi();
 void logWIFI();
-_DATA readData();
+DataStruct readData();
 void flashLED(int nTimes);
 void checkGPIOS();
 void http_to_string(char* const returnString, const int code);
@@ -323,7 +324,7 @@ void setup() {
 
 // Multithreading - start 3 tasks with a data queue in between.
 	// Data is thrown into here.
-	dataQueue = xQueueCreate(SETTINGS::DataQueueLength, sizeof(DATA));
+	dataQueue = xQueueCreate(SETTINGS::DataQueueLength, sizeof(DataStruct));
 	// LED flashes are thrown in here.
 	flashQueue = xQueueCreate(5, sizeof(int));
 	// Keep one data element in queue.
@@ -419,49 +420,55 @@ bool connectToWifi() {
 	return true;
 }
 
-// Read all the data and return readings as _DATA object.
-_DATA readData() {
+// Read all the data and return readings as DataStruct object.
+DataStruct readData() {
 	
-	_DATA DATA;
+	DataStruct data;
 
 	// Take some readings.
 	LOG_PRINTLN(F("Taking Measurements."));
 	// Pulse the LED once.
 	flashLED(1);
 	// Timestamp the data.
-	DATA.timestamp_s = now();
+	data.timestamp_s = now();
 
 #if ( TEST != 1 )
 	if (SETTINGS::EnableINA260)
 	{
 		// Read the voltage.
-		DATA.voltage_V = ina260.readBusVoltage() * 0.001 * 3 * 1.007;
+		data.voltage_V = ina260.readBusVoltage() * 0.001 * 3 * 1.007;
 		// Read the current.
-		DATA.current_A = ina260.readCurrent() * 0.001;
+		data.current_A = ina260.readCurrent() * 0.001;
 		// Calculate the power.
-		DATA.power_W = DATA.voltage_V * DATA.current_A;
+		data.power_W = data.voltage_V * data.current_A;
 	}
 #else
 	// Only for testing without ina260 connected.
-	DATA.voltage_V = 5;
-	DATA.current_A = 100.0;
-	DATA.power_W = 500;
+	data.voltage_V = 5;
+	data.current_A = 100.0;
+	data.power_W = 500;
 #endif
 
 	// Take windspeed reading.
-	DATA.windspeed_mps = anemometer.getWindSpeed();
+	data.windspeed_mps = anemometer.getWindSpeed();
 	// Take turbine rpm reading.
-	DATA.turbineSpeed_rpm = turbine.getRPM();
+	data.turbineSpeed_rpm = turbine.getRPM();
 
-	DATA.pressure_g = turbine.getLoadCellReading();
+	data.pressure_g = turbine.getLoadCellReading();
 
 	// Calculate total Wh.
 	float interval_Hours = SETTINGS::ReadingInterval_mS / 3600000.0;
-	float power_W = DATA.power_W;
-	DATA.energy_Wh = power_W * interval_Hours;
+	float power_W = data.power_W;
+	data.energy_Wh = power_W * interval_Hours;
+
+	// Check the Wifi signal strength
+	//   If not connected, set the db to -10k
+	data.wifiStrength_dBm = -10000;
+	if (WiFi.status() == WL_CONNECTED)
+		data.wifiStrength_dBm = WiFi.RSSI();
 
 	// Return a data object.
-	return DATA;
+	return data;
 }
 
 // Queue flashes for LED flashing task.
@@ -534,15 +541,6 @@ void readData_task(void* p) {
 		logWIFI();
 #endif
 
-// Check connection if not connected reset.
-		if (WiFi.status() != WL_CONNECTED) {
-
-			LOG_PRINTLN(F("Wifi is not connected... Initiating reset."));
-			const char logError[50] = "Error: Wifi is not connected restarting.\0";
-			logger.log(logError);
-			ESP.restart();
-		}
-		
 		auto data = readData();
 
 #if ( DEBUGLEVEL == DEBUG )
@@ -557,6 +555,17 @@ void readData_task(void* p) {
 		LOG_PRINTLN(readings);
 		LOG_PRINTLN();
 #endif
+
+		// Make sure we have enough room in the data queue to send this data
+		//   We have to suspend the transmission task to prevent race conditions
+		vTaskSuspend(transmitData_handle);
+		if (uxQueueSpacesAvailable(dataQueue) < 1)
+		{
+			// If there is no room, remove the oldest item on the queue
+			DataStruct data;
+			xQueueReceive(dataQueue, &data, portMAX_DELAY);
+		}
+		vTaskResume(transmitData_handle);
 
 		// Queue the data.
 		xQueueSend(dataQueue, &data, portMAX_DELAY);
@@ -592,52 +601,60 @@ void transmitData_task(void* p) {
 
 // Parse the data.
 		char content[CONTENT_LENGTH] = "\0";
+		char *endOfContent = content;
 
 		bool contentAvailable = false;
 
-		// Assuming delay on reading means we can't keep loading the queue while emptying...
-		while (uxQueueMessagesWaiting(dataQueue)) {
+		// If we see the Wifi, we grab data to transmit
+		if (WiFi.status() == WL_CONNECTED) {
 
-			char line[LINE_LENGTH];
-			_DATA data;
+			// Assuming delay on reading means we can't keep loading the queue while emptying...
+			while (uxQueueMessagesWaiting(dataQueue)) {
 
-			xQueueReceive(dataQueue, &data, portMAX_DELAY);
+				DataStruct data;
 
-			auto ts = data.timestamp_s;
+				xQueueReceive(dataQueue, &data, portMAX_DELAY);
 
-			if (!SETTINGS::EnableINA260)
-			{
-				sprintf(line, "%lu,Windspeed,%.1f\n"
+				if (SETTINGS::EnableINA260)
+				{
+					endOfContent += sprintf(endOfContent, "%lu,Voltage,%.3f\n"
+						"%lu,Current,%.3f\n"
+						"%lu,Power,%.3f\n"
+						"%lu,Energy,%.3f\n",
+						ts, data.voltage_V,
+						ts, data.current_A,
+						ts, data.power_W,
+						ts, data.energy_Wh);
+				}
+
+				endOfContent += sprintf(endOfContent, "%lu,Windspeed,%.1f\n"
 					"%lu,Turbine_RPM,%.2f\n"
 					"%lu,Turbine_Force,%.0f\n",
+					"%lu,Wifi_Strength,%d\n",
 					ts, data.windspeed_mps,
 					ts, data.turbineSpeed_rpm,
-					ts, data.pressure_g);
-			}
-			else
-			{
-				sprintf(line, "%lu,Voltage,%.3f\n"
-					"%lu,Current,%.3f\n"
-					"%lu,Power,%.3f\n"
-					"%lu,Energy,%.3f\n"
-					"%lu,Windspeed,%.1f\n"
-					"%lu,Turbine_RPM,%.2f\n"
-					"%lu,Turbine_Force,%.0f\n",
-					ts, data.voltage_V,
-					ts, data.current_A,
-					ts, data.power_W,
-					ts, data.energy_Wh, 
-					ts, data.windspeed_mps,
-					ts, data.turbineSpeed_rpm,
-					ts, data.pressure_g);
+					ts, data.pressure_g,
+					ts, data.wifiStrength_dBm);
+
+				// Check if buffer overrun on line.
+				//LOG_PRINT(F("Strlen line: "));
+				//LOG_PRINTLN(strlen(line));
+
+				contentAvailable = true;
+
 			}
 
-			strcat(content, line);
-			// Check if buffer overrun on line.
-			//LOG_PRINT(F("Strlen line: "));
-			//LOG_PRINTLN(strlen(line));
+		}
+		else
+		{
 
-			contentAvailable = true;
+			// Before re-enabling this, should probably come up with a heuristic
+			//   for how many times it is unconnected before it resets.
+			LOG_PRINTLN(F("Wifi is not connected..."));
+
+			// const char logError[50] = "Error: Wifi is not connected restarting.\0";
+			// logger.log(logError);
+			// ESP.restart();
 
 		}
 
@@ -648,7 +665,7 @@ void transmitData_task(void* p) {
 
 	// Building the POST request.
 			char length[6];
-			sprintf(length, "%d", strlen(content));
+			sprintf(length, "%d", endOfContent - content);
 			http.begin(client, url);
 			http.addHeader(F("Content-Length"), length);
 			http.addHeader(F("api-key"), SETTINGS::APIKey);
@@ -692,10 +709,13 @@ void transmitData_task(void* p) {
 
 			http.end();
 		}
+
 //	  If crashes can be due to not enough RAM see tasks in setup.
 		// DEBUG_PRINT("RAM left in Transmit: ");
 		// DEBUG_PRINTLN(uxTaskGetStackHighWaterMark(NULL));
+
 	}
+
 }
 
 // Takes a load cell reading so that the load cell measurement queue gets updated.
