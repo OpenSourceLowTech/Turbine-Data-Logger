@@ -615,6 +615,8 @@ void transmitData_task(void* p) {
 
 				xQueueReceive(dataQueue, &data, portMAX_DELAY);
 
+				unsigned long ts = data.timestamp_s;
+
 				if (SETTINGS::EnableINA260)
 				{
 					endOfContent += sprintf(endOfContent, "%lu,Voltage,%.3f\n"
