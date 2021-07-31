@@ -631,7 +631,7 @@ void transmitData_task(void* p) {
 
 				endOfContent += sprintf(endOfContent, "%lu,Windspeed,%.1f\n"
 					"%lu,Turbine_RPM,%.2f\n"
-					"%lu,Turbine_Force,%.0f\n",
+					"%lu,Turbine_Force,%.0f\n"
 					"%lu,Wifi_Strength,%d\n",
 					ts, data.windspeed_mps,
 					ts, data.turbineSpeed_rpm,
