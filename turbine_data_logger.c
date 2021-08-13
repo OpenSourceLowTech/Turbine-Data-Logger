@@ -583,7 +583,7 @@ void transmitData_task(void* p) {
 	static WiFiClient client;
 
 // Make sure big enough to contain string for line.
-	const int LINE_LENGTH = 200;
+	const int LINE_LENGTH = 400;
 	const int CONTENT_LENGTH = LINE_LENGTH * SETTINGS::DataQueueLength;
 
 // Parse the address.
@@ -652,11 +652,11 @@ void transmitData_task(void* p) {
 
 			// Before re-enabling this, should probably come up with a heuristic
 			//   for how many times it is unconnected before it resets.
-			LOG_PRINTLN(F("Wifi is not connected..."));
+			LOG_PRINTLN(F("Wifi is not connected. Restarting."));
 
 			// const char logError[50] = "Error: Wifi is not connected restarting.\0";
 			// logger.log(logError);
-			// ESP.restart();
+			ESP.restart();
 
 		}
 
