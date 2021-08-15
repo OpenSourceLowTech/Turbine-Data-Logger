@@ -600,7 +600,7 @@ void transmitData_task(void* p) {
 		LOG_PRINTLN();
 
 // Parse the data.
-		char content[CONTENT_LENGTH] = "\0";
+		static char content[CONTENT_LENGTH] = "\0";
 		char *endOfContent = content;
 
 		bool contentAvailable = false;
